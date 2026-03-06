@@ -25,7 +25,6 @@
 # -----------------------------
 # CONFIG - Start (edit these)
 # -----------------------------
-
 $TenantId       = "YOUR_TENANT_ID_GUID_OR_DOMAIN"
 $ClientId       = "YOUR_APP_CLIENT_ID"
 $ClientSecret   = "YOUR_CLIENT_SECRET"   # Consider using a secure vault in production
@@ -46,9 +45,16 @@ $DeltaLinkPath  = "C:\test\calendar_deltaLink_apponly.txt"
 
 # Swithes
 $LogAuthToken = $false  # Only log if needed, as it contains sensitive info
-$LogJasonResponses = $true # Set to $false to skip logging JSON responses (faster, but no visibility into actual data returned)
+$LogJasonResponses = $false # Set to $false to skip logging JSON responses (faster, but no visibility into actual data returned)
 $BeautifyJson = $true # Set to $false to log raw JSON without reformatting (faster, but less readable)
 $DebugWriteHostEnabled = $false # Set to $true to enable extra debug Write-Host lines  
+$EnableAdvancedPriorAndCurrentNextLinkComparison = $false # Set to $true to enable detailed comparison of prior and current nextLink URLs in logs (useful for debugging paging loops)  
+
+# nextlink tracking - Used for checking for repeating nextlinks which could indicate a paging loop.  In production, you would
+# typically rely on the script to follow nextLinks and deltaLinks correctly, but this can be helpful for testing and debugging 
+# to confirm that the script is picking up where it left off if you are starting with a known nextLink URL.
+$Prior_NextLinkUrl = ""  # For testing, you can set this to a known nextLink URL to start from there instead of the initial URL.  In production, this would typically be $null on the first run, and you would rely on the script to follow nextLinks and deltaLinks correctly.
+$Prior_NextLinkPage = 0 # For logging/debugging, track the page number where the prior nextLink was found. This is just for visibility in logs to confirm we're picking up where we left off if using a prior nextLink.
 
 # -----------------------------
 # CONFIG - End
@@ -209,6 +215,8 @@ try {
     # Optional: collect minimal event info in memory (so we can summarize)
     $events = New-Object System.Collections.Generic.List[object]
 
+ 
+
     while ($url) {
         $page++
         Write-Host "=== PAGE $page ==="
@@ -221,23 +229,49 @@ try {
             $total += $countThisPage
             WriteDebug -Line "9.2"
             foreach ($ev in $data.value) {
+                WriteDebug -Line "9.3"
                 $isRemoved = $false
-                $removedReason = $null
+                $removedReason = "" # $null
                 if ($ev.PSObject.Properties.Name -contains "@removed") {
                     $isRemoved = $true
                     $removedReason = $ev.'@removed'.reason
                 }
 
-                $events.Add([pscustomobject]@{
-                    id              = $ev.id
-                    $subject        = $ev.PSObject.Properties['subject'] ? $ev.subject : "<MISSING: subject>" # Subject can be null/empty for removed items or if not in the URL's select fields
-                    start           = $ev.PSObject.Properties['start.dateTime'] ? $ev.start.dateTime : "<MISSING: start>" # start can be missing depending upon URL used (e.g. if we didn't select it)
-                    #start           = $ev.start.dateTime
-                    end             = $ev.PSObject.Properties['end.dateTime'] ? $ev.end.dateTime : "<MISSING: end>" # end can be missing depending upon URL used (e.g. if we didn't select it)
-                    #end             = $ev.end.dateTime
-                    isRemoved       = $isRemoved
-                    removedReason   = $removedReason
-                })
+                WriteDebug -Line "9.4"
+                # Get the data ready - make it easeir to debug missing fields by checking if they exist before accessing (e.g. subject can be missing for removed items or if not in select, start/end can be missing if not in select).  This way we won't get errors when trying to access missing fields and we can see in logs when expected fields are missing.
+                $use_id = $ev.id
+                 WriteDebug -Line "9.4.1"
+                $use_subject = $ev.PSObject.Properties['subject'] ? $ev.subject : "<MISSING: subject>" # Subject can be null/empty for removed items or if not in the URL's select fields
+                WriteDebug -Line "9.4.2"
+                $use_start = $ev.PSObject.Properties['start.dateTime'] ? $ev.start.dateTime : "<MISSING: start>" # start can be missing depending upon URL used (e.g. if we didn't select it)
+                WriteDebug -Line "9.4.3"
+                $use_end = $ev.PSObject.Properties['end.dateTime'] ? $ev.end.dateTime : "<MISSING: end>" # end can be missing depending upon URL used (e.g. if we didn't select it)
+                WriteDebug -Line "9.4.4"
+                $use_isremoved = $isRemoved
+                WriteDebug -Line "9.4.5"
+                $use_removedReason = $removedReason
+
+                #$use_id 
+                #$use_subject  
+                #$use_start  
+                #$use_end  
+                #$use_isremoved  
+                #use_removedReason  
+
+                #https://learn.microsoft.com/en-us/powershell/scripting/learn/deep-dives/everything-about-pscustomobject?view=powershell-7.5
+    
+                $myObject = [pscustomobject]@{
+                    id     = $use_id 
+                    subject     = $use_subject 
+                    start = $use_start 
+                    end = $use_end
+                    isRemoved       = $use_isremoved 
+                    removedReason   = $use_removedReason
+                }
+
+                $events.Add($myObject) 
+
+                WriteDebug -Line "9.6"
             }
         }
         WriteDebug -Line "9.10"
@@ -254,6 +288,7 @@ try {
         $SkipTokenFound = $false
         $DeltaLinkFound = $false
 
+        WriteDebug -Line "10.1"
         # - Follow @odata.nextLink until it disappears (use entire URL). [2](https://learn.microsoft.com/en-us/graph/paging)[1](https://learn.microsoft.com/en-us/graph/api/event-delta?view=graph-rest-1.0)
         if ($data.PSObject.Properties.Name -contains "@odata.nextLink") {
             $url = $data.'@odata.nextLink'
@@ -262,38 +297,61 @@ try {
             Write-Host "----------------------------------------------------------------------------------------------------------------"
             $NextLinkFound = $true
 
-            <#  
-            # Per docs, @odata.nextLink and @odata.skiptoken should not appear together. If they do, it's unexpected. Log a warning but continue with nextLink to 
-            # avoid losing data (deltaLink would indicate end of changes, so we don't want to stop if we see both - we want to follow nextLink).
-            # [1](https://learn.microsoft.com/en-us/graph/api/event-delta?view=graph-rest-1.0)
-            if ($data.PSObject.Properties.Name -contains "@odata.skiptoken") {
-                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                Write-Warning "Both @odata.nextLink and @odata.skiptoken found in response. This is unexpected for Graph API responses. " + 
-                    "Will follow @odata.nextLink as per documentation, but please investigate the response content and consider reporting to Microsoft if you see this."
-                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                #$skiptoken = $data.'@odata.skiptoken'
+            WriteDebug -Line "10.2"
+            if ($url -eq $Prior_NextLinkUrl) {
+                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                Write-Warning "Warning:Prior and current nextLink URLs match !"
+                Write-Warning "The prior and the current nextLink URLs are the same (found on prior page $Prior_NextLinkPage and current page $countThisPage). "
+                Write-Warning "This could indicate a paging loop. Please investigate."
+                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                WriteDebug -Line "10.3"
             }
-            #>
-
-            # Per documentation thre should not be a deltaLink if there's a nextLink, but we'll log if we see both just in case.
+            else {
+                Write-Host "----------------------------------------------------------------------------------------------------------------------------------------------------------"
+                if ($Prior_NextLinkUrl -eq "") {
+                    #Write-Host "The prior nextLink was found on page $Prior_NextLinkPage is blank, so we don't have a prior nextLink to compare to yet."
+                } else {
+                     
+                    Write-Host "Good News: The current nextLink and the prior nextLink don't match, which is good."  
+                    if ($EnableAdvancedPriorAndCurrentNextLinkComparison) {
+                        Write-Host "Below is a detailed comparison of the two nextLink URLs to show where they differ."
+                        Compare-StringDetailed -Left $Prior_NextLinkUrl -Right $url
+                    }
+                }   
+ 
+                Write-Host "----------------------------------------------------------------------------------------------------------------------------------------------------------"
+                WriteDebug -Line "10.4"
+            }
+        
+             
+            # Per documentation there should not be a deltaLink if there's a nextLink, but we'll log if we see both just in case.
             # See:  https://learn.microsoft.com/en-us/graph/delta-query-overview
             #    2.c: A page can't contain both @odata.deltaLink and @odata.nextLink.
             if ($data.PSObject.Properties.Name -contains "@odata.deltaLink") {
                 Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                Write-Warning "Both @odata.nextLink and @odata.deltaLink found in response. This is unexpected for Graph API responses. " + 
-                    "Will observe only the deltaLink, which will end processing. However, please investigate the response content and consider reporting to Microsoft if you see this."
+                Write-Warning "Both @odata.nextLink and @odata.deltaLink found in response. This is unexpected for Graph API responses. "   
+                Write-Warning "Will observe only the deltaLink, which will end processing. However, please investigate the response content "
+                Write-Warning "and consider reporting to Microsoft if you see this."
                 Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
                 #$skiptoken = $data.'@odata.skiptoken'
+                WriteDebug -Line "10.5"
                 $DeltaLinkFound = $true
             }
+            WriteDebug -Line "10.6"
+            $Prior_NextLinkUrl  = $url 
+            $Prior_NextLinkPage =  $countThisPage
+
+            WriteDebug -Line "10.7"
             continue
         }
         if ($data.PSObject.Properties.Name -contains "@odata.skiptoken") {
+            WriteDebug -Line "10.8"
             $skiptoken = $data.'@odata.skiptoken'
             Write-Host "----------------------------------------------------------------------------------------------------------------"
             Write-Host "skiptoken found: $skiptoken"
             Write-Host "----------------------------------------------------------------------------------------------------------------"
             $SkipTokenFound = $true
+            WriteDebug -Line "10.9"
             #continue
         }
         WriteDebug -Line "11"
@@ -346,3 +404,108 @@ catch {
 finally {
     Stop-Transcript | Out-Null
 }
+
+ 
+<#
+
+function Compare-StringDetailed
+
+.SYNOPSIS
+  Compare two strings and explain the differences (case, whole-string, and character-level).
+
+.DESCRIPTION
+  - Shows equality results (case-insensitive and case-sensitive).
+  - Shows "diff-style" results via Compare-Object (with and without -CaseSensitive).
+  - Produces a character-by-character diff (index + left/right chars) and a pointer line.
+
+  Compare-Object behavior:
+    <= means value exists only in ReferenceObject (left)
+    => means value exists only in DifferenceObject (right)
+    == means value exists in both when -IncludeEqual is used
+#>
+ 
+function Compare-StringDetailed {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Left,
+
+        [Parameter(Mandatory)]
+        [string]$Right
+    )
+
+    Write-Host "LEFT : [$Left]"
+    Write-Host "RIGHT: [$Right]"
+    Write-Host ""
+    if ($Left -eq "") {
+        Write-Host "Cannot compare because the left string is empty."
+    }  
+    if ($Right -eq "") {
+        Write-Host "Cannot compare because the right string is empty."
+    }  
+
+    # 1) Quick equality checks
+    $eqCaseInsensitive = ($Left -eq $Right)   # default is case-insensitive for -eq
+    $eqCaseSensitive   = ($Left -ceq $Right)  # case-sensitive equals
+    Write-Host "Equality:"
+    Write-Host ("  -eq  (case-insensitive): {0}" -f $eqCaseInsensitive)
+    Write-Host ("  -ceq (case-sensitive)  : {0}" -f $eqCaseSensitive)
+    Write-Host ""
+
+    # 2) "Diff-style" using Compare-Object
+    # Compare-Object compares two sets of objects and indicates which side they appear on. [1](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/compare-object?view=powershell-7.5)[2](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/compare-object?view=powershell-7.5)
+    Write-Host "Compare-Object (default: case-insensitive):"
+    Compare-Object -ReferenceObject @($Left) -DifferenceObject @($Right) -IncludeEqual |
+        Format-Table -AutoSize
+    Write-Host ""
+
+    Write-Host "Compare-Object (-CaseSensitive):"
+    Compare-Object -ReferenceObject @($Left) -DifferenceObject @($Right) -IncludeEqual -CaseSensitive |
+        Format-Table -AutoSize
+    Write-Host ""
+
+    # 3) Character-by-character diff (best for "where does it differ?")
+    # Handles different lengths cleanly by comparing up to max length.
+    $maxLen = [Math]::Max($Left.Length, $Right.Length)
+
+    $diffs = for ($i = 0; $i -lt $maxLen; $i++) {
+        $lChar = if ($i -lt $Left.Length)  { $Left[$i] }  else { $null }
+        $rChar = if ($i -lt $Right.Length) { $Right[$i] } else { $null }
+
+        if ($lChar -cne $rChar) {
+            [pscustomobject]@{
+                Index    = $i
+                LeftChar = if ($null -eq $lChar) { "<END>" } else { [string]$lChar }
+                RightChar= if ($null -eq $rChar) { "<END>" } else { [string]$rChar }
+            }
+        }
+    }
+
+    if (-not $diffs) {
+        Write-Host "Character-level diff: No differences."
+        return
+    }
+
+    Write-Host "Character-level differences (case-sensitive):"
+    $diffs | Format-Table -AutoSize
+    Write-Host ""
+
+    # Create a visual pointer line showing where differences occur.
+    # Example:
+    # LEFT : PowerShell rocks
+    # RIGHT: Powershell rocks
+    #        ^            (caret under differing char)
+    $pointer = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $maxLen; $i++) {
+        $lChar = if ($i -lt $Left.Length)  { $Left[$i] }  else { $null }
+        $rChar = if ($i -lt $Right.Length) { $Right[$i] } else { $null }
+        [void]$pointer.Append( ($(if ($lChar -cne $rChar) { '^' } else { ' ' })) )
+    }
+
+    Write-Host "Diff pointer (^) positions:"
+    Write-Host "LEFT : $Left"
+    Write-Host "RIGHT: $Right"
+    Write-Host ("      " + $pointer.ToString())
+}
+
+ 
