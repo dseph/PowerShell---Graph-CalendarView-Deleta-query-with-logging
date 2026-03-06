@@ -3,7 +3,7 @@
 # This will do a Graph calenadarviewdelta query and sync all item.  It can continue in suscessive runs.  
 # Note the two files it creates - one is the log and the other to do follow-up syncs.
 # Page size and the URL can be adjusted.
-# I has switches to control logging of the token, Logging of the json body, beautification (foratting) of the jason content.
+# It has switches to control logging of the token, logging of the json body, beautification (foratting) of the jason content.
 # 
 # =====================================================================
 # App-only (Client Credentials) CalendarView Delta Sync with Paging + Logging
