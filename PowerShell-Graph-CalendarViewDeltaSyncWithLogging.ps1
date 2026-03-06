@@ -161,6 +161,7 @@ try {
             "Accept"        = "application/json"
             # calendarView/delta supports Prefer: odata.maxpagesize [1](https://learn.microsoft.com/en-us/graph/api/event-delta?view=graph-rest-1.0)
             "Prefer"        = "odata.maxpagesize=$MaxPageSize"
+            "X-AnchorMailbox" = $UserIdOrUpn # Optional but can help with performance and consistent routing in some cases [1](https://learn.microsoft.com/en-us/graph/api/event-delta?view=graph-rest-1.0)
         }
         WriteDebug -Line  "6"
         Write-Host "---- GRAPH REQUEST ----"
