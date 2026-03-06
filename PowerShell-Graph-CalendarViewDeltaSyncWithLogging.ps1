@@ -22,9 +22,10 @@
 # - Use full @odata.nextLink for paging [2](https://learn.microsoft.com/en-us/graph/paging)
 # - Client credentials token request + scope .default [3](https://learn.microsoft.com/en-us/graph/auth-v2-service)
 
-# -------------------------
-# CONFIG (edit these)
-# -------------------------
+# -----------------------------
+# CONFIG - Start (edit these)
+# -----------------------------
+
 $TenantId       = "YOUR_TENANT_ID_GUID_OR_DOMAIN"
 $ClientId       = "YOUR_APP_CLIENT_ID"
 $ClientSecret   = "YOUR_CLIENT_SECRET"   # Consider using a secure vault in production
@@ -48,7 +49,11 @@ $LogAuthToken = $false  # Only log if needed, as it contains sensitive info
 $LogJasonResponses = $true # Set to $false to skip logging JSON responses (faster, but no visibility into actual data returned)
 $BeautifyJson = $true # Set to $false to log raw JSON without reformatting (faster, but less readable)
 $DebugWriteHostEnabled = $false # Set to $true to enable extra debug Write-Host lines  
- 
+
+# -----------------------------
+# CONFIG - End
+# -----------------------------
+
 # Ensure folder exists
 $logDir = Split-Path -Parent $LogPath
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
@@ -245,12 +250,42 @@ try {
         Write-Host ""
         WriteDebug -Line "10"
         # Paging rules:
+        $NextLinkFound = $false
+        $SkipTokenFound = $false
+        $DeltaLinkFound = $false
+
         # - Follow @odata.nextLink until it disappears (use entire URL). [2](https://learn.microsoft.com/en-us/graph/paging)[1](https://learn.microsoft.com/en-us/graph/api/event-delta?view=graph-rest-1.0)
         if ($data.PSObject.Properties.Name -contains "@odata.nextLink") {
             $url = $data.'@odata.nextLink'
             Write-Host "----------------------------------------------------------------------------------------------------------------"
             Write-Host "nextLink found -> continuing with: $url"
             Write-Host "----------------------------------------------------------------------------------------------------------------"
+            $NextLinkFound = $true
+
+            <#  
+            # Per docs, @odata.nextLink and @odata.skiptoken should not appear together. If they do, it's unexpected. Log a warning but continue with nextLink to 
+            # avoid losing data (deltaLink would indicate end of changes, so we don't want to stop if we see both - we want to follow nextLink).
+            # [1](https://learn.microsoft.com/en-us/graph/api/event-delta?view=graph-rest-1.0)
+            if ($data.PSObject.Properties.Name -contains "@odata.skiptoken") {
+                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                Write-Warning "Both @odata.nextLink and @odata.skiptoken found in response. This is unexpected for Graph API responses. " + 
+                    "Will follow @odata.nextLink as per documentation, but please investigate the response content and consider reporting to Microsoft if you see this."
+                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                #$skiptoken = $data.'@odata.skiptoken'
+            }
+            #>
+
+            # Per documentation thre should not be a deltaLink if there's a nextLink, but we'll log if we see both just in case.
+            # See:  https://learn.microsoft.com/en-us/graph/delta-query-overview
+            #    2.c: A page can't contain both @odata.deltaLink and @odata.nextLink.
+            if ($data.PSObject.Properties.Name -contains "@odata.deltaLink") {
+                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                Write-Warning "Both @odata.nextLink and @odata.deltaLink found in response. This is unexpected for Graph API responses. " + 
+                    "Will observe only the deltaLink, which will end processing. However, please investigate the response content and consider reporting to Microsoft if you see this."
+                Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                #$skiptoken = $data.'@odata.skiptoken'
+                $DeltaLinkFound = $true
+            }
             continue
         }
         if ($data.PSObject.Properties.Name -contains "@odata.skiptoken") {
@@ -258,7 +293,8 @@ try {
             Write-Host "----------------------------------------------------------------------------------------------------------------"
             Write-Host "skiptoken found: $skiptoken"
             Write-Host "----------------------------------------------------------------------------------------------------------------"
-            continue
+            $SkipTokenFound = $true
+            #continue
         }
         WriteDebug -Line "11"
         # When the round completes, Graph returns @odata.deltaLink. [1](https://learn.microsoft.com/en-us/graph/api/event-delta?view=graph-rest-1.0)
@@ -269,9 +305,17 @@ try {
             Write-Host "----------------------------------------------------------------------------------------------------------------"
             Write-Host "deltaLink found -> round complete"
             Write-Host "----------------------------------------------------------------------------------------------------------------"
+            $DeltaLinkFound = $true
         } else {
             Write-Warning "No @odata.nextLink or @odata.deltaLink returned; stopping defensively."
         }
+
+        <# 
+        if ($skiptokenFound -eq $false -and $NextLinkFound -eq $false -and $DeltaLinkFound -eq $false) {
+            Write-Warning "No paging or delta links found in response; stopping defensively."
+         }
+        #>
+
         WriteDebug -Line "12"
         $url = $null
     }
