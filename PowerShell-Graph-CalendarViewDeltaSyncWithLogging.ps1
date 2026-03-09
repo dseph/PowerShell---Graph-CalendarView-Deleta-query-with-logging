@@ -244,9 +244,9 @@ try {
                  WriteDebug -Line "9.4.1"
                 $use_subject = $ev.PSObject.Properties['subject'] ? $ev.subject : "<MISSING: subject>" # Subject can be null/empty for removed items or if not in the URL's select fields
                 WriteDebug -Line "9.4.2"
-                $use_start = $ev.PSObject.Properties['start.dateTime'] ? $ev.start.dateTime : "<MISSING: start>" # start can be missing depending upon URL used (e.g. if we didn't select it)
+                $use_start = $ev.PSObject.Properties['start'] ? $ev.start.dateTime : "<MISSING: start>" # start can be missing depending upon URL used (e.g. if we didn't select it)
                 WriteDebug -Line "9.4.3"
-                $use_end = $ev.PSObject.Properties['end.dateTime'] ? $ev.end.dateTime : "<MISSING: end>" # end can be missing depending upon URL used (e.g. if we didn't select it)
+                $use_end = $ev.PSObject.Properties['end'] ? $ev.end.dateTime : "<MISSING: end>" # end can be missing depending upon URL used (e.g. if we didn't select it)
                 WriteDebug -Line "9.4.4"
                 $use_isremoved = $isRemoved
                 WriteDebug -Line "9.4.5"
